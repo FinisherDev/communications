@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Call API Test</title>
+</head>
+<body>
+    <video id="localVideo" autoplay playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <button onclick="startCall()">Start Call</button>
+    <script>
+        const pendingCandidates = [];
+        const socket = new WebSocket("ws://127.0.0.1:8010/ws/call/room1/");
+        const peerConnection = new RTCPeerConnection({
+            iceServers: [
+                { urls: "stun:stun.l.google.com:19302" },
+                { urls: "turn:172.27.62.88:3478", username: "matrix", credential: "R3l0@d3d." }
+            ]
+        });
+
+        // Handle incoming WebSocket messages
+        socket.onmessage = async (event) => {
+            const message = JSON.parse(event.data);
+            if (message.offer) {
+                /*if (peerConnection.signalingState !== "stable") {
+                    console.warn("Ignoring offer since the signaling state is not stable.");
+                    return;
+                }else if (peerConnection.signalingState === "closed") {
+                    console.warn("RTCPeerConnection is closed. Recreating it...");
+                    createNewPeerConnection();
+                }*/
+
+                console.log("Recieved offer, setting remote description...");
+                console.log("Current Signaling State:", peerConnection.signalingState);
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+
+                console.log("answer:");
+                const answer = await peerConnection.createAnswer();
+                console.log(answer);
+                await peerConnection.setLocalDescription(answer);
+                socket.send({ type: 'answer', answer: answer});
+
+                pendingCandidates.forEach(candidate => peerConnection.addIceCandidate(candidate));
+                pendingCandidates.length = 0;
+            } else if (message.answer) {
+                if (peerConnection.signalingState !== "have-local-offer") {
+                    console.warn("Ignoring answer since the haveLocalOffer state is not present.");
+                    return;
+                }
+
+                console.log("Answer recieved, setting remote description...");
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+
+                pendingCandidates.forEach(candidate => peerConnection.addIceCandidate(candidate));
+                pendingCandidates.length = 0;
+            } else if (message.candidate) {
+                console.log("Recieved Ice candidate");
+
+                //if (peerConnection.remoteDescription) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                /*} else {
+                    console.warn("Description not set. Storing candidates");
+                    pendingCandidates.push(new RTCIceCandidate(message.candidate));
+                }*/
+            }
+        };
+
+        // Send ICE candidates to the other peer
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.send(JSON.stringify({ candidate: event.candidate }));
+            }
+        };
+
+        //Start call function
+        async function startCall() {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true })
+            stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
+            document.getElementById("localVideo").srcObject = stream;
+
+            const offer = await peerConnection.createOffer();
+            console.log(offer);
+            await peerConnection.setLocalDescription(offer);
+            socket.send(JSON.stringify({offer}));
+        }
+
+        // Recieve remote video stream
+        peerConnection.ontrack = (event) => {
+            document.getElementById("remoteVideo").srcObject = event.streams[0];
+        };
+    </script>
+</body>
+</html>
